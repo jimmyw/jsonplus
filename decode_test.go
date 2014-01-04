@@ -66,6 +66,19 @@ type ustruct struct {
 	M unmarshaler
 }
 
+type cunmarshaler struct {
+	T string
+}
+
+func (u *cunmarshaler) UnmarshalJSON(c interface{}, b []byte) error {
+	*u = cunmarshaler{fmt.Sprintf("true:%v", c)}
+	return nil
+}
+
+type custruct struct {
+	M cunmarshaler
+}
+
 type unmarshalerText struct {
 	T bool
 }
@@ -87,12 +100,18 @@ type ustructText struct {
 }
 
 var (
-	um0, um1 unmarshaler // target2 of unmarshaling
-	ump      = &um1
-	umtrue   = unmarshaler{true}
-	umslice  = []unmarshaler{{true}}
-	umslicep = new([]unmarshaler)
-	umstruct = ustruct{unmarshaler{true}}
+	um0, um1   unmarshaler // target2 of unmarshaling
+	ump        = &um1
+	umtrue     = unmarshaler{true}
+	umslice    = []unmarshaler{{true}}
+	umslicep   = new([]unmarshaler)
+	umstruct   = ustruct{unmarshaler{true}}
+	cum0, cum1 cunmarshaler // target2 of unmarshaling
+	cump       = &cum1
+	cumtrue    = cunmarshaler{"true:test"}
+	cumslice   = []cunmarshaler{{"true:test"}}
+	cumslicep  = new([]cunmarshaler)
+	cumstruct  = custruct{cunmarshaler{"true:test"}}
 
 	um0T, um1T unmarshalerText // target2 of unmarshaling
 	umpT       = &um1T
@@ -294,6 +313,13 @@ var unmarshalTests = []unmarshalTest{
 	{in: `[{"T":false}]`, ptr: &umslice, out: umslice},
 	{in: `[{"T":false}]`, ptr: &umslicep, out: &umslice},
 	{in: `{"M":{"T":false}}`, ptr: &umstruct, out: umstruct},
+
+	// context aware unmarshal interface test
+	{in: `{"T":"foo"}`, ptr: &cum0, out: cumtrue}, // use "false" so test will fail if custom unmarshaler is not called
+	{in: `{"T":"foo"}`, ptr: &cump, out: &cumtrue},
+	{in: `[{"T":"foo"}]`, ptr: &cumslice, out: cumslice},
+	{in: `[{"T":"foo"}]`, ptr: &cumslicep, out: &cumslice},
+	{in: `{"M":{"T":"foo"}}`, ptr: &cumstruct, out: cumstruct},
 
 	// UnmarshalText interface test
 	{in: `"X"`, ptr: &um0T, out: umtrueT}, // use "false" so test will fail if custom unmarshaler is not called
@@ -520,7 +546,7 @@ func TestUnmarshal(t *testing.T) {
 		if tt.useNumber {
 			dec.UseNumber()
 		}
-		if err := dec.Decode(v.Interface()); !reflect.DeepEqual(err, tt.err) {
+		if err := dec.DecodeWithContext("test", v.Interface()); !reflect.DeepEqual(err, tt.err) {
 			t.Errorf("#%d: %v want %v", i, err, tt.err)
 			continue
 		}
@@ -545,7 +571,7 @@ func TestUnmarshal(t *testing.T) {
 			if tt.useNumber {
 				dec.UseNumber()
 			}
-			if err := dec.Decode(vv.Interface()); err != nil {
+			if err := dec.DecodeWithContext("test", vv.Interface()); err != nil {
 				t.Errorf("#%d: error re-unmarshaling %#q: %v", i, enc, err)
 				continue
 			}

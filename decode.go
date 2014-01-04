@@ -69,7 +69,20 @@ func Unmarshal(data []byte, v interface{}) error {
 		return err
 	}
 
-	d.init(data)
+	d.init(nil, data)
+	return d.unmarshal(v)
+}
+func UnmarshalWithContext(c interface{}, data []byte, v interface{}) error {
+	// Check for well-formedness.
+	// Avoids filling out half a data structure
+	// before discovering a JSON syntax error.
+	var d decodeState
+	err := checkValid(data, &d.scan)
+	if err != nil {
+		return err
+	}
+
+	d.init(c, data)
 	return d.unmarshal(v)
 }
 
@@ -80,6 +93,10 @@ func Unmarshal(data []byte, v interface{}) error {
 // if it wishes to retain the data after returning.
 type Unmarshaler interface {
 	UnmarshalJSON([]byte) error
+}
+
+type ContextualUnmarshaler interface {
+	UnmarshalJSON(interface{}, []byte) error
 }
 
 // An UnmarshalTypeError describes a JSON value that was
@@ -163,6 +180,7 @@ func (n Number) Int64() (int64, error) {
 
 // decodeState represents the state while decoding a JSON value.
 type decodeState struct {
+	context    interface{}
 	data       []byte
 	off        int // read offset in data
 	scan       scanner
@@ -177,7 +195,8 @@ type decodeState struct {
 // the data slice while the decoder executes.
 var errPhase = errors.New("JSON decoder out of sync - data changing underfoot?")
 
-func (d *decodeState) init(data []byte) *decodeState {
+func (d *decodeState) init(c interface{}, data []byte) *decodeState {
+	d.context = c
 	d.data = data
 	d.off = 0
 	d.savedError = nil
@@ -292,7 +311,7 @@ func (d *decodeState) value(v reflect.Value) {
 // until it gets to a non-pointer.
 // if it encounters an Unmarshaler, indirect stops and returns that.
 // if decodingNull is true, indirect stops at the last pointer so it can be set to nil.
-func (d *decodeState) indirect(v reflect.Value, decodingNull bool) (Unmarshaler, encoding.TextUnmarshaler, reflect.Value) {
+func (d *decodeState) indirect(v reflect.Value, decodingNull bool) (ContextualUnmarshaler, Unmarshaler, encoding.TextUnmarshaler, reflect.Value) {
 	// If v is a named type and is addressable,
 	// start with its address, so that if the type has pointer methods,
 	// we find them.
@@ -321,23 +340,34 @@ func (d *decodeState) indirect(v reflect.Value, decodingNull bool) (Unmarshaler,
 			v.Set(reflect.New(v.Type().Elem()))
 		}
 		if v.Type().NumMethod() > 0 {
+			if u, ok := v.Interface().(ContextualUnmarshaler); ok {
+				return u, nil, nil, reflect.Value{}
+			}
 			if u, ok := v.Interface().(Unmarshaler); ok {
-				return u, nil, reflect.Value{}
+				return nil, u, nil, reflect.Value{}
 			}
 			if u, ok := v.Interface().(encoding.TextUnmarshaler); ok {
-				return nil, u, reflect.Value{}
+				return nil, nil, u, reflect.Value{}
 			}
 		}
 		v = v.Elem()
 	}
-	return nil, nil, v
+	return nil, nil, nil, v
 }
 
 // array consumes an array from d.data[d.off-1:], decoding into the value v.
 // the first byte of the array ('[') has been read already.
 func (d *decodeState) array(v reflect.Value) {
 	// Check for unmarshaler.
-	u, ut, pv := d.indirect(v, false)
+	cu, u, ut, pv := d.indirect(v, false)
+	if cu != nil {
+		d.off--
+		err := cu.UnmarshalJSON(d.context, d.next())
+		if err != nil {
+			d.error(err)
+		}
+		return
+	}
 	if u != nil {
 		d.off--
 		err := u.UnmarshalJSON(d.next())
@@ -443,7 +473,15 @@ func (d *decodeState) array(v reflect.Value) {
 // the first byte of the object ('{') has been read already.
 func (d *decodeState) object(v reflect.Value) {
 	// Check for unmarshaler.
-	u, ut, pv := d.indirect(v, false)
+	cu, u, ut, pv := d.indirect(v, false)
+	if cu != nil {
+		d.off--
+		err := cu.UnmarshalJSON(d.context, d.next())
+		if err != nil {
+			d.error(err)
+		}
+		return
+	}
 	if u != nil {
 		d.off--
 		err := u.UnmarshalJSON(d.next())
@@ -626,7 +664,14 @@ func (d *decodeState) literalStore(item []byte, v reflect.Value, fromQuoted bool
 		return
 	}
 	wantptr := item[0] == 'n' // null
-	u, ut, pv := d.indirect(v, wantptr)
+	cu, u, ut, pv := d.indirect(v, wantptr)
+	if cu != nil {
+		err := cu.UnmarshalJSON(d.context, item)
+		if err != nil {
+			d.error(err)
+		}
+		return
+	}
 	if u != nil {
 		err := u.UnmarshalJSON(item)
 		if err != nil {

@@ -49,7 +49,29 @@ func (dec *Decoder) Decode(v interface{}) error {
 	// Don't save err from unmarshal into dec.err:
 	// the connection is still usable since we read a complete JSON
 	// object from it before the error happened.
-	dec.d.init(dec.buf[0:n])
+	dec.d.init(nil, dec.buf[0:n])
+	err = dec.d.unmarshal(v)
+
+	// Slide rest of data down.
+	rest := copy(dec.buf, dec.buf[n:])
+	dec.buf = dec.buf[0:rest]
+
+	return err
+}
+func (dec *Decoder) DecodeWithContext(c, v interface{}) error {
+	if dec.err != nil {
+		return dec.err
+	}
+
+	n, err := dec.readValue()
+	if err != nil {
+		return err
+	}
+
+	// Don't save err from unmarshal into dec.err:
+	// the connection is still usable since we read a complete JSON
+	// object from it before the error happened.
+	dec.d.init(c, dec.buf[0:n])
 	err = dec.d.unmarshal(v)
 
 	// Slide rest of data down.
