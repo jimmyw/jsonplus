@@ -156,7 +156,32 @@ func (enc *Encoder) Encode(v interface{}) error {
 	if enc.err != nil {
 		return enc.err
 	}
-	e := newEncodeState()
+	e := newEncodeState(nil)
+	err := e.marshal(v)
+	if err != nil {
+		return err
+	}
+
+	// Terminate each value with a newline.
+	// This makes the output look a little nicer
+	// when debugging, and some kind of space
+	// is required if the encoded value was a number,
+	// so that the reader knows there aren't more
+	// digits coming.
+	e.WriteByte('\n')
+
+	if _, err = enc.w.Write(e.Bytes()); err != nil {
+		enc.err = err
+	}
+	putEncodeState(e)
+	return err
+}
+
+func (enc *Encoder) EncodeWithContext(c, v interface{}) error {
+	if enc.err != nil {
+		return enc.err
+	}
+	e := newEncodeState(c)
 	err := e.marshal(v)
 	if err != nil {
 		return err

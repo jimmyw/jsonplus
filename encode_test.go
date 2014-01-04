@@ -6,6 +6,7 @@ package jsonplus
 
 import (
 	"bytes"
+	"fmt"
 	"math"
 	"reflect"
 	"testing"
@@ -423,5 +424,40 @@ func TestIssue6458(t *testing.T) {
 
 	if want := `{"M":"ImZvbyI="}`; string(b) != want {
 		t.Errorf("Marshal(x) = %#q; want %#q", b, want)
+	}
+}
+
+// Ref has Marshaler and Unmarshaler methods with pointer receiver.
+type RefC1 int
+
+func (self *RefC1) MarshalJSON(c interface{}) ([]byte, error) {
+	return []byte(fmt.Sprintf(`"ref:%v:%v"`, *self, c)), nil
+}
+
+type RefC2 int
+
+func (self RefC2) MarshalJSON(c interface{}) ([]byte, error) {
+	return []byte(fmt.Sprintf(`"ref:%v:%v"`, self, c)), nil
+}
+
+func TestContextualMarshalJSON(t *testing.T) {
+	var s = struct {
+		R0 RefC1
+		R1 *RefC1
+		R2 RefC2
+		R3 *RefC2
+	}{
+		R0: 12,
+		R1: new(RefC1),
+		R2: 12,
+		R3: new(RefC2),
+	}
+	const want = `{"R0":"ref:12:FOO","R1":"ref:0:FOO","R2":"ref:12:FOO","R3":"ref:0:FOO"}`
+	b, err := MarshalWithContext("FOO", &s)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if got := string(b); got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }

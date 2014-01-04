@@ -136,6 +136,15 @@ func Marshal(v interface{}) ([]byte, error) {
 	return e.Bytes(), nil
 }
 
+func MarshalWithContext(c, v interface{}) ([]byte, error) {
+	e := &encodeState{context: c}
+	err := e.marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	return e.Bytes(), nil
+}
+
 // MarshalIndent is like Marshal but applies Indent to format the output.
 func MarshalIndent(v interface{}, prefix, indent string) ([]byte, error) {
 	b, err := Marshal(v)
@@ -190,6 +199,9 @@ func HTMLEscape(dst *bytes.Buffer, src []byte) {
 type Marshaler interface {
 	MarshalJSON() ([]byte, error)
 }
+type ContextualMarshaler interface {
+	MarshalJSON(interface{}) ([]byte, error)
+}
 
 // An UnsupportedTypeError is returned by Marshal when attempting
 // to encode an unsupported value type.
@@ -238,23 +250,26 @@ var hex = "0123456789abcdef"
 // An encodeState encodes JSON into a bytes.Buffer.
 type encodeState struct {
 	bytes.Buffer // accumulated output
+	context      interface{}
 	scratch      [64]byte
 }
 
 // TODO(bradfitz): use a sync.Cache here
 var encodeStatePool = make(chan *encodeState, 8)
 
-func newEncodeState() *encodeState {
+func newEncodeState(c interface{}) *encodeState {
 	select {
 	case e := <-encodeStatePool:
 		e.Reset()
+		e.context = c
 		return e
 	default:
-		return new(encodeState)
+		return &encodeState{context: c}
 	}
 }
 
 func putEncodeState(e *encodeState) {
+	e.context = nil
 	select {
 	case encodeStatePool <- e:
 	default:
@@ -354,13 +369,22 @@ func typeEncoder(t reflect.Type) encoderFunc {
 }
 
 var (
-	marshalerType     = reflect.TypeOf(new(Marshaler)).Elem()
-	textMarshalerType = reflect.TypeOf(new(encoding.TextMarshaler)).Elem()
+	contextualMarshalerType = reflect.TypeOf(new(ContextualMarshaler)).Elem()
+	marshalerType           = reflect.TypeOf(new(Marshaler)).Elem()
+	textMarshalerType       = reflect.TypeOf(new(encoding.TextMarshaler)).Elem()
 )
 
 // newTypeEncoder constructs an encoderFunc for a type.
 // The returned encoder only checks CanAddr when allowAddr is true.
 func newTypeEncoder(t reflect.Type, allowAddr bool) encoderFunc {
+	if t.Implements(contextualMarshalerType) {
+		return contextualMarshalerEncoder
+	}
+	if t.Kind() != reflect.Ptr && allowAddr {
+		if reflect.PtrTo(t).Implements(contextualMarshalerType) {
+			return newCondAddrEncoder(contextualAddrMarshalerEncoder, newTypeEncoder(t, false))
+		}
+	}
 	if t.Implements(marshalerType) {
 		return marshalerEncoder
 	}
@@ -420,6 +444,39 @@ func marshalerEncoder(e *encodeState, v reflect.Value, quoted bool) {
 	}
 	m := v.Interface().(Marshaler)
 	b, err := m.MarshalJSON()
+	if err == nil {
+		// copy JSON into buffer, checking validity.
+		err = compact(&e.Buffer, b, true)
+	}
+	if err != nil {
+		e.error(&MarshalerError{v.Type(), err})
+	}
+}
+
+func contextualMarshalerEncoder(e *encodeState, v reflect.Value, quoted bool) {
+	if v.Kind() == reflect.Ptr && v.IsNil() {
+		e.WriteString("null")
+		return
+	}
+	m := v.Interface().(ContextualMarshaler)
+	b, err := m.MarshalJSON(e.context)
+	if err == nil {
+		// copy JSON into buffer, checking validity.
+		err = compact(&e.Buffer, b, true)
+	}
+	if err != nil {
+		e.error(&MarshalerError{v.Type(), err})
+	}
+}
+
+func contextualAddrMarshalerEncoder(e *encodeState, v reflect.Value, quoted bool) {
+	va := v.Addr()
+	if va.IsNil() {
+		e.WriteString("null")
+		return
+	}
+	m := va.Interface().(ContextualMarshaler)
+	b, err := m.MarshalJSON(e.context)
 	if err == nil {
 		// copy JSON into buffer, checking validity.
 		err = compact(&e.Buffer, b, true)
